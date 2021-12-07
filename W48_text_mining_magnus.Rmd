@@ -1,0 +1,184 @@
+---
+title: "W48: Sentiment analysis of Game of Thrones"
+author: "Magnus Thastum"
+date: "6/12/2021"
+output: html_document
+---
+
+## Getting the GOT text
+First and foremost let's load the necessary libraries:
+```{r}
+library(tidyverse)
+library(here)
+library(pdftools)
+library(tidytext)
+library(textdata) 
+library(ggwordcloud)
+```
+
+The we import the text by first making a path and then the text
+```{r}
+got_path <- here("data","got.pdf")
+got_text <- pdf_text(got_path)
+```
+
+## Wrangling
+Now we start to convert the text into a format we can analyse. First step is splitting each line in the text into it's own row. First we split the pages into separate lines, that are separated by \\n, which is the first mutate command. Then using the unnest command we put them into columns. Latly the second mutate command trims the white space in the text.
+```{r}
+got_df <- data.frame(got_text) %>% 
+  mutate(text_full = str_split(got_text, pattern = "\\n")) %>% 
+  unnest(text_full) %>% 
+  mutate(text_full = str_trim(text_full))
+```
+
+## Putting words in tidy format
+It is not enough to simply split the text into separate lines, we want each word in a separate row. To do this we use the unnest_tokens command. In this case the tokens are words.
+```{r}
+got_tokens <- got_df %>%
+  unnest_tokens(word, text_full)
+```
+
+After splitting the words into separate rows, we are able to count the words, where we can see that the most frequent words in the text are words like: the, and, to. These words don't really say much about the sentiments in the text. So it would be a good idea to exclude them.
+```{r}
+got_wc <- got_tokens %>% 
+  count(word) %>% 
+  arrange(-n)
+got_wc
+```
+
+
+## Removeing stop words
+When removing the unwanted words we use a stop words lexicon (stop_words), and the anti_join command.
+```{r}
+got_stop <- got_tokens %>% 
+  anti_join(stop_words) %>% 
+  select(-got_text)
+```
+We can now count the words in the text without all the "filler" words
+```{r}
+got_swc <- got_stop %>% 
+  count(word) %>% 
+  arrange(-n)
+got_swc
+```
+
+Here we can see that among the most common words are the names of the principle characters (Jon, Ned, Tyrion) and titles (Lord, King). Which makes sens since this is a character-focused fantasy text.
+
+## Creating a word cloud
+If we want a better overview of the most common words we can make a word cloud. But since there's over 11000 words in the text, as is shown below, we first select the top 100 words using the head(100) command. 
+```{r}
+length(unique(got_stop$word))
+```
+
+```{r}
+got_top100 <- got_stop %>% 
+  count(word) %>% 
+  arrange(-n) %>% 
+  head(100)
+```
+
+We can now make a word cloud, that is color coordinated to visualize the words and their importance in the text. 
+```{r}
+got_cloud <- ggplot(data = got_top100, aes(label = word, size = n)) +
+  geom_text_wordcloud_area(aes(color = n), shape = "diamond") +
+  scale_size_area(max_size = 12) +
+  scale_color_gradientn(colors = c("darkgreen", "blue", "red")) +
+  theme_minimal()
+got_cloud
+```
+
+## Sentiment analysis with AFINN
+One way of doing sentiment analysis is using the AFINN lexicon, which ranks words on a scale from -5 to 5 (5 being the most positive words).
+```{r}
+get_sentiments(lexicon = "afinn")
+```
+
+We can join the AFINN lexicon the the game of thrones text by using the inner_join and get_sentiments commands. Liek so:
+```{r}
+got_afinn <- got_stop %>% 
+  inner_join(get_sentiments("afinn"))
+```
+
+Then we can plot the different values AFINN assigns:
+```{r}
+got_afinn_hist <- got_afinn %>% 
+  count(value)
+
+ggplot(data = got_afinn_hist, aes(x = value, y = n)) +
+  geom_col()
+```
+
+At first glance it seems that there are many negative words in the text, especially words with the value -2, so let's look at them:
+```{r}
+got_afinn2 <- got_afinn %>% 
+  filter(value == -2)
+
+unique(got_afinn2$word)
+```
+
+It's a little hard to get a overview from the list above. To improve this we could plot them, but since there's so many words, we'll only use the top 25:
+```{r}
+got_afinn2_n <- got_afinn2 %>% 
+  count(word, sort = TRUE) %>% 
+  head(25) %>% 
+  mutate(word = fct_reorder(factor(word), n))
+
+ggplot(data = got_afinn2_n, aes(x = word, y = n)) +
+  geom_col() +
+  coord_flip()
+```
+
+Here we can see that fire, fear and death are common in the text. Which again tells us that generally text text might have negative sentiemts.
+
+We can check this by summarising and finding the mean and median of the words scores:
+```{r}
+got_summary <- got_afinn %>% 
+  summarise(
+    mean_score = mean(value),
+    median_score = median(value)
+  )
+
+got_summary
+```
+The results backs up our claims that overall the text has negative sentiments. 
+
+## Sentiment Analysis with NRC lexicon
+Another way of analyzing the sentiments in the text is with the NRC lexicon. NRC categorizes the words by feeling insted of ranking them.For example smile would be associated with joy.
+Let's start the same way we did with AFINN, by join the words and lexicon.
+```{r}
+got_nrc <- got_stop %>% 
+  inner_join(get_sentiments("nrc"))
+```
+The we can plot the feelings:
+```{r}
+got_nrc_n <- got_nrc %>% 
+  count(sentiment, sort = TRUE)
+
+ggplot(data = got_nrc_n, aes(x = sentiment, y = n)) +
+  geom_col()
+```
+
+Here we again see that there are many negative words, but also many positive. An interesting felling is trust i think. If you read the book one of the main themes is trust, and the breaking of trust. So this having a high count makes sense to me.
+
+Let's now try to what words are associated with the feelings. We create a graph for each feeling and the top 5 words associated, like so:
+```{r}
+got_nrc_n5 <- got_nrc %>% 
+  count(word, sentiment, sort = TRUE) %>% 
+  group_by(sentiment) %>% 
+  top_n(5) %>% 
+  ungroup()
+
+got_nrc_gg <- ggplot(data = got_nrc_n5, aes(x = reorder(word, n), y = n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, ncol = 2, scales = "free") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Word", y = "count")
+
+got_nrc_gg
+```
+
+If we start by looking a trust again, we see words such as father and brother, which is understandable since the text is focused around families.Another interesting fact is that lord is present in multiple categories, showing the different meaning the words can have. We also some of the names of the Characters being associated with a feeling, for example Bran, who is a character, is under disgust. In my view this puts this analysis into doubt, since we don't know how the lexicon might interpret "neutral" words.
+
+## Conclusion
+During the sentiment analysis we have clearly seen the limitations of the lexicons. But overall the analysis have given a general view of the sort of text we are dealing with, and the overall themes, one might expect.
